@@ -24,7 +24,15 @@ import {
 } from "recharts";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const API_BASE = getApiBase();
+
+function getApiBase() {
+  const configured = import.meta.env.VITE_API_BASE?.trim();
+  if (configured) return configured.replace(/\/$/, "");
+
+  const isLocalhost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+  return isLocalhost ? "http://localhost:8000" : "";
+}
 
 function formatCurrency(value) {
   if (value === null || value === undefined) return "N/A";
@@ -53,6 +61,13 @@ function App() {
       return;
     }
 
+    if (!API_BASE) {
+      setError(
+        "Backend API URL is not configured. Set VITE_API_BASE to your deployed FastAPI backend URL."
+      );
+      return;
+    }
+
     setLoading(true);
     setError("");
     setResult(null);
@@ -65,13 +80,17 @@ function App() {
         method: "POST",
         body,
       });
-      const payload = await response.json();
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(payload.detail || "Analysis failed.");
       }
       setResult(payload);
     } catch (err) {
-      setError(err.message);
+      const message =
+        err instanceof TypeError
+          ? `Could not reach the backend API at ${API_BASE}. Make sure FastAPI is running and CORS allows this frontend.`
+          : err.message;
+      setError(message);
     } finally {
       setLoading(false);
     }
