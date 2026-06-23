@@ -43,12 +43,24 @@ uvicorn app.main:app --reload --port 8000
 
 If `python3.12` is not found, install Python 3.12 or use another stable Python version such as 3.10 or 3.11. Avoid Python 3.14 for now because some data libraries may try to compile from source.
 
+For deployed frontends, set `ALLOWED_ORIGINS` on the backend to the frontend URL:
+
+```bash
+ALLOWED_ORIGINS=https://your-frontend.netlify.app
+```
+
 ### Frontend
 
 ```bash
 cd frontend
 npm install
 npm run dev
+```
+
+Create `frontend/.env` when the backend is not running at `http://localhost:8000`:
+
+```text
+VITE_API_BASE=https://your-fastapi-backend.example.com
 ```
 
 Open the Vite URL, usually:
@@ -60,6 +72,10 @@ http://localhost:5173
 ## Free Price Data Note
 
 The app tries free web quote sources first and uses the most recent available quote or latest close it can retrieve. It does not use the uploaded CSV's stale `Current` column for calculations. Production financial software should use a licensed market-data provider.
+
+## Deployment Note
+
+The Netlify config in this repo builds the React frontend only. The FastAPI backend must be deployed separately, then the frontend must be configured with `VITE_API_BASE`. Without that variable, a deployed frontend cannot analyze CSV files because browsers cannot call a backend that is only running on a developer's laptop.
 
 ## Privacy Note
 

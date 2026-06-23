@@ -1,8 +1,19 @@
+import os
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .analyzer import analyze_holdings
 from .models import AnalyzeResponse
+
+
+def _allowed_origins() -> list[str]:
+    configured = os.getenv("ALLOWED_ORIGINS", "")
+    origins = [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return origins or [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
 
 app = FastAPI(
@@ -13,10 +24,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,4 +51,3 @@ async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
         return analyze_holdings(csv_text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
