@@ -31,7 +31,7 @@ function getApiBase() {
   if (configured) return configured.replace(/\/$/, "");
 
   const isLocalhost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-  return isLocalhost ? "http://localhost:8000" : "";
+  return isLocalhost ? "http://localhost:8000" : "/.netlify/functions";
 }
 
 function formatCurrency(value) {
@@ -61,25 +61,12 @@ function App() {
       return;
     }
 
-    if (!API_BASE) {
-      setError(
-        "Backend API URL is not configured. Set VITE_API_BASE to your deployed FastAPI backend URL."
-      );
-      return;
-    }
-
     setLoading(true);
     setError("");
     setResult(null);
 
-    const body = new FormData();
-    body.append("file", file);
-
     try {
-      const response = await fetch(`${API_BASE}/api/analyze`, {
-        method: "POST",
-        body,
-      });
+      const response = await submitAnalysis(file);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(payload.detail || "Analysis failed.");
@@ -88,12 +75,37 @@ function App() {
     } catch (err) {
       const message =
         err instanceof TypeError
-          ? `Could not reach the backend API at ${API_BASE}. Make sure FastAPI is running and CORS allows this frontend.`
+          ? `Could not reach the analyzer API at ${API_BASE}. Make sure the backend or Netlify function is deployed.`
           : err.message;
       setError(message);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function submitAnalysis(uploadedFile) {
+    const usingNetlifyFunction = API_BASE.includes("/.netlify/functions");
+
+    if (usingNetlifyFunction) {
+      const csvText = await uploadedFile.text();
+      return fetch(`${API_BASE}/analyze`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          filename: uploadedFile.name,
+          csvText,
+        }),
+      });
+    }
+
+    const body = new FormData();
+    body.append("file", uploadedFile);
+    return fetch(`${API_BASE}/api/analyze`, {
+      method: "POST",
+      body,
+    });
   }
 
   function downloadCsv() {

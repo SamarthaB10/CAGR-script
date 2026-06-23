@@ -43,7 +43,7 @@ uvicorn app.main:app --reload --port 8000
 
 If `python3.12` is not found, install Python 3.12 or use another stable Python version such as 3.10 or 3.11. Avoid Python 3.14 for now because some data libraries may try to compile from source.
 
-For deployed frontends, set `ALLOWED_ORIGINS` on the backend to the frontend URL:
+For separately deployed frontends, set `ALLOWED_ORIGINS` on the backend to the frontend URL:
 
 ```bash
 ALLOWED_ORIGINS=https://your-frontend.netlify.app
@@ -57,7 +57,11 @@ npm install
 npm run dev
 ```
 
-Create `frontend/.env` when the backend is not running at `http://localhost:8000`:
+Create `frontend/.env` when the backend is not running at `http://localhost:8000`.
+
+For Netlify deploys, this repo includes a same-origin Netlify Function at `/.netlify/functions/analyze`, so `VITE_API_BASE` can be left unset.
+
+For a separately deployed FastAPI backend, set:
 
 ```text
 VITE_API_BASE=https://your-fastapi-backend.example.com
@@ -75,7 +79,7 @@ The app tries free web quote sources first and uses the most recent available qu
 
 ## Deployment Note
 
-The Netlify config in this repo builds the React frontend only. The FastAPI backend must be deployed separately, then the frontend must be configured with `VITE_API_BASE`. Without that variable, a deployed frontend cannot analyze CSV files because browsers cannot call a backend that is only running on a developer's laptop.
+The Netlify config builds the React frontend and deploys a serverless analyzer function from `netlify/functions/analyze.mjs`. Local development can still use the FastAPI backend. If you deploy the FastAPI backend separately instead of using the Netlify Function, configure `VITE_API_BASE` in the frontend and `ALLOWED_ORIGINS` in the backend.
 
 ## Privacy Note
 
