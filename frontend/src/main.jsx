@@ -121,7 +121,7 @@ function App() {
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">Brokerage prices first • In-memory upload processing</p>
+          <p className="eyebrow">Recent market prices • In-memory upload processing</p>
           <h1>Portfolio CAGR Analyzer</h1>
           <p className="hero-copy">
             Upload a brokerage holdings CSV and turn raw lots into clean CAGR,

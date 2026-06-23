@@ -1,13 +1,13 @@
 # Portfolio CAGR Analyzer
 
-A privacy-friendly web app that analyzes brokerage holdings CSV exports, uses brokerage-provided current prices when available, and calculates lot-level and ticker-level performance metrics. If the uploaded file does not include current prices, the backend can try free `yfinance` prices as a fallback.
+A privacy-friendly web app that analyzes brokerage holdings CSV exports, fetches the most recent available market prices from free web quote sources, and calculates lot-level and ticker-level performance metrics.
 
 Built as a practical resume project from a Python CAGR script:
 
 - Upload an Altruist-style holdings CSV from the browser
 - Clean currency, quantity, ticker, and purchase-date fields
-- Use current prices from the uploaded brokerage CSV when available
-- Fall back to free market prices without paid APIs
+- Fetch recent market prices without paid APIs
+- Fall back from current quotes to the latest available market close when needed
 - Calculate CAGR, market value, unrealized gain/loss, and holding period
 - View dashboard cards, charts, and a sortable results table
 - Download an enriched CSV report
@@ -15,7 +15,7 @@ Built as a practical resume project from a Python CAGR script:
 
 ## Tech Stack
 
-- Backend: FastAPI, pandas, yfinance
+- Backend: FastAPI, pandas, requests
 - Frontend: React, Vite, Recharts
 - Deployment-friendly: frontend and backend can be deployed separately
 
@@ -59,7 +59,7 @@ http://localhost:5173
 
 ## Free Price Data Note
 
-Altruist holdings exports often include a `Current` column, and this app prefers that value because it came from the brokerage report itself. When an upload does not include current prices, the app can try `yfinance`, which is free but unofficial. Production financial software should use a licensed market-data provider.
+The app tries free web quote sources first and uses the most recent available quote or latest close it can retrieve. It does not use the uploaded CSV's stale `Current` column for calculations. Production financial software should use a licensed market-data provider.
 
 ## Privacy Note
 
