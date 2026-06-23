@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from io import StringIO
 import math
 import re
+from typing import Any
+from urllib.parse import quote
 
 import pandas as pd
-import yfinance as yf
+import requests
 
 from .models import AnalyzeResponse, LotResult, PortfolioSummary, TickerSummary
 
 
 REQUIRED_COLUMNS = {"Ticker", "Purchased", "Quantity", "Total Cost"}
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+    )
+}
 
 
 def _clean_money_or_number(series: pd.Series) -> pd.Series:
@@ -47,46 +56,137 @@ def calculate_cagr(beginning_value: float, ending_value: float, years: float) ->
     return round((((ending_value / beginning_value) ** (1 / safe_years)) - 1) * 100, 2)
 
 
-def fetch_current_prices(tickers: list[str]) -> tuple[dict[str, float], list[str]]:
+def fetch_current_prices(tickers: list[str]) -> tuple[dict[str, float], dict[str, dict[str, str | None]], list[str]]:
     if not tickers:
-        return {}, []
+        return {}, {}, []
 
     warnings: list[str] = []
     prices: dict[str, float] = {}
+    metadata: dict[str, dict[str, str | None]] = {}
 
-    try:
-        data = yf.download(
-            tickers=" ".join(tickers),
-            period="5d",
-            progress=False,
-            group_by="ticker",
-            auto_adjust=False,
-            threads=True,
-        )
-    except Exception as exc:
-        return {}, [f"Price lookup failed: {exc}"]
-
-    if data.empty:
-        return {}, ["No live prices were returned from Yahoo Finance."]
-
-    for ticker in tickers:
-        price = None
-        try:
-            if len(tickers) == 1:
-                close = data["Close"].dropna()
+    with ThreadPoolExecutor(max_workers=24) as executor:
+        futures = {executor.submit(_fetch_live_or_recent_price, ticker): ticker for ticker in tickers}
+        for future in as_completed(futures):
+            ticker = futures[future]
+            quote_data = future.result()
+            if quote_data:
+                prices[ticker] = quote_data["price"]
+                metadata[ticker] = {
+                    "source": quote_data["source"],
+                    "as_of": quote_data.get("as_of"),
+                }
             else:
-                close = data[ticker]["Close"].dropna()
-            if not close.empty:
-                price = float(close.iloc[-1])
-        except Exception:
-            price = None
+                warnings.append(f"No current or recent market price found for {ticker}.")
 
-        if price is None or math.isnan(price) or price <= 0:
-            warnings.append(f"No current price found for {ticker}.")
-        else:
-            prices[ticker] = round(price, 2)
+    if prices:
+        warnings.append(f"Fetched current web prices for {len(prices)} ticker(s).")
 
-    return prices, warnings
+    return prices, metadata, warnings
+
+
+def _fetch_live_or_recent_price(ticker: str) -> dict[str, Any] | None:
+    return (
+        _fetch_yahoo_chart_price(ticker)
+        or _fetch_nasdaq_price(ticker, "stocks")
+        or _fetch_nasdaq_price(ticker, "etf")
+    )
+
+
+def _fetch_yahoo_chart_price(ticker: str) -> dict[str, Any] | None:
+    yahoo_symbol = ticker.replace(".", "-")
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(yahoo_symbol)}"
+    try:
+        response = requests.get(
+            url,
+            params={"range": "5d", "interval": "1d"},
+            headers=HEADERS,
+            timeout=4,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        result = payload.get("chart", {}).get("result") or []
+        if not result:
+            return None
+
+        chart = result[0]
+        meta = chart.get("meta", {})
+        price = meta.get("regularMarketPrice")
+        timestamp = meta.get("regularMarketTime")
+        source = "Yahoo Finance current quote"
+
+        if price is None or not _is_valid_price(float(price)):
+            price, timestamp = _latest_yahoo_close(chart)
+            source = "Yahoo Finance latest close"
+
+        if price is None or not _is_valid_price(float(price)):
+            return None
+
+        as_of = None
+        if timestamp:
+            as_of = datetime.fromtimestamp(int(timestamp), tz=timezone.utc).isoformat()
+        return {"price": round(float(price), 2), "source": source, "as_of": as_of}
+    except Exception:
+        return None
+
+
+def _latest_yahoo_close(chart: dict[str, Any]) -> tuple[float | None, int | None]:
+    timestamps = chart.get("timestamp") or []
+    close_values = (
+        (chart.get("indicators", {}).get("quote") or [{}])[0]
+        .get("close", [])
+    )
+
+    for index in range(len(close_values) - 1, -1, -1):
+        close = close_values[index]
+        if close is None:
+            continue
+        price = float(close)
+        if _is_valid_price(price):
+            timestamp = timestamps[index] if index < len(timestamps) else None
+            return price, timestamp
+
+    return None, None
+
+
+def _fetch_nasdaq_price(ticker: str, asset_class: str) -> dict[str, Any] | None:
+    url = f"https://api.nasdaq.com/api/quote/{quote(ticker)}/info"
+    try:
+        response = requests.get(
+            url,
+            params={"assetclass": asset_class},
+            headers=HEADERS,
+            timeout=4,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        primary_data = payload.get("data", {}).get("primaryData", {})
+        price_text = primary_data.get("lastSalePrice")
+        price = _parse_price_text(price_text)
+        if price is None:
+            return None
+        return {
+            "price": price,
+            "source": f"Nasdaq delayed {asset_class} quote",
+            "as_of": primary_data.get("lastTradeTimestamp"),
+        }
+    except Exception:
+        return None
+
+
+def _parse_price_text(value: object) -> float | None:
+    if value is None:
+        return None
+    cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+    if not cleaned:
+        return None
+    price = float(cleaned)
+    if not _is_valid_price(price):
+        return None
+    return round(price, 2)
+
+
+def _is_valid_price(price: float) -> bool:
+    return not math.isnan(price) and price > 0
 
 
 def extract_csv_prices(df: pd.DataFrame) -> dict[str, float]:
@@ -133,18 +233,10 @@ def analyze_holdings(csv_text: str) -> AnalyzeResponse:
     df["Years Held"] = ((now - df["Purchased"]).dt.days / 365.25).clip(lower=1 / 365.25)
 
     tickers = sorted(df["Ticker"].unique().tolist())
-    csv_prices = extract_csv_prices(df)
-    missing_price_tickers = [ticker for ticker in tickers if ticker not in csv_prices]
+    live_prices, price_metadata, price_warnings = fetch_current_prices(tickers)
+    warnings.extend(price_warnings)
 
-    if csv_prices:
-        warnings.append("Used current prices from the uploaded brokerage CSV.")
-
-    fallback_prices: dict[str, float] = {}
-    if missing_price_tickers:
-        fallback_prices, price_warnings = fetch_current_prices(missing_price_tickers)
-        warnings.extend(price_warnings)
-
-    prices = {**fallback_prices, **csv_prices}
+    prices = live_prices
 
     lot_results: list[LotResult] = []
     rows_for_csv: list[dict[str, object]] = []
@@ -155,6 +247,7 @@ def analyze_holdings(csv_text: str) -> AnalyzeResponse:
         total_cost = float(row["Total Cost"])
         years_held = round(float(row["Years Held"]), 4)
         current_price = prices.get(ticker)
+        ticker_price_metadata = price_metadata.get(ticker, {})
 
         market_value = None
         gain_loss = None
@@ -196,6 +289,8 @@ def analyze_holdings(csv_text: str) -> AnalyzeResponse:
                 "Calculated Gain/Loss %": lot.gain_loss_percent,
                 "Calculated Years Held": lot.years_held,
                 "Calculated CAGR %": lot.cagr_percent,
+                "Price Source": ticker_price_metadata.get("source"),
+                "Price As Of": ticker_price_metadata.get("as_of"),
                 "Pricing Status": lot.status,
             }
         )
