@@ -31,12 +31,14 @@ function getApiBase() {
   if (configured) return configured.replace(/\/$/, "");
 
   const isLocalhost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-  return isLocalhost ? "http://localhost:8000" : "/.netlify/functions";
+  return isLocalhost ? "http://localhost:8000" : "/api";
 }
 
 function getAnalyzeUrl() {
   const isNetlifyFunction = API_BASE.includes("/.netlify/functions");
-  return `${API_BASE}${isNetlifyFunction ? "/analyze" : "/api/analyze"}`;
+  const isApiRoot = API_BASE.endsWith("/api");
+  if (isNetlifyFunction || isApiRoot) return `${API_BASE}/analyze`;
+  return `${API_BASE}/api/analyze`;
 }
 
 function formatCurrency(value) {
