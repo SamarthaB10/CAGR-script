@@ -3,16 +3,28 @@ const HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
 };
+const RESPONSE_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Content-Type": "application/json",
+};
 
 export async function handler(event) {
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 204,
+      headers: RESPONSE_HEADERS,
+      body: "",
+    };
+  }
+
   if (event.httpMethod !== "POST") {
     return jsonResponse(405, { detail: "Method not allowed." });
   }
 
   try {
-    const body = JSON.parse(event.body || "{}");
-    const filename = body.filename || "";
-    const csvText = body.csvText || "";
+    const { filename, csvText } = extractUpload(event);
 
     if (!filename.toLowerCase().endsWith(".csv")) {
       return jsonResponse(400, { detail: "Please upload a CSV file." });
@@ -27,6 +39,108 @@ export async function handler(event) {
   } catch (error) {
     return jsonResponse(400, { detail: error.message || "Analysis failed." });
   }
+}
+
+function extractUpload(event) {
+  const contentType = getHeader(event.headers, "content-type");
+
+  if (contentType.includes("multipart/form-data")) {
+    return extractMultipartUpload(event, contentType);
+  }
+
+  if (contentType.includes("application/json")) {
+    const body = JSON.parse(getBodyBuffer(event).toString("utf8") || "{}");
+    return {
+      filename: body.filename || "",
+      csvText: body.csvText || "",
+    };
+  }
+
+  if (contentType.includes("text/csv")) {
+    return {
+      filename: "upload.csv",
+      csvText: getBodyBuffer(event).toString("utf8"),
+    };
+  }
+
+  throw new Error("Could not extract a CSV file from the upload.");
+}
+
+function extractMultipartUpload(event, contentType) {
+  const boundary = getMultipartBoundary(contentType);
+  if (!boundary) {
+    throw new Error("Could not extract the uploaded file boundary.");
+  }
+
+  const parts = parseMultipartBody(getBodyBuffer(event), boundary);
+  const filePart =
+    parts.find((part) => part.name === "file" && part.filename) ||
+    parts.find((part) => part.filename);
+  const textPart = parts.find((part) => part.name === "csvText");
+
+  if (filePart) {
+    return {
+      filename: filePart.filename,
+      csvText: filePart.content.toString("utf8"),
+    };
+  }
+
+  if (textPart) {
+    return {
+      filename: "upload.csv",
+      csvText: textPart.content.toString("utf8"),
+    };
+  }
+
+  throw new Error("Could not extract a CSV file from the upload.");
+}
+
+function getMultipartBoundary(contentType) {
+  const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  return match ? (match[1] || match[2]).trim() : null;
+}
+
+function parseMultipartBody(bodyBuffer, boundary) {
+  const delimiter = `--${boundary}`;
+  const body = bodyBuffer.toString("latin1");
+
+  return body
+    .split(delimiter)
+    .slice(1, -1)
+    .map((part) => part.replace(/^\r?\n/, "").replace(/\r?\n$/, ""))
+    .map(parseMultipartPart)
+    .filter(Boolean);
+}
+
+function parseMultipartPart(part) {
+  const separator = part.indexOf("\r\n\r\n");
+  if (separator === -1) return null;
+
+  const rawHeaders = part.slice(0, separator).split("\r\n");
+  const content = part.slice(separator + 4);
+  const disposition = rawHeaders.find((header) => header.toLowerCase().startsWith("content-disposition:"));
+  if (!disposition) return null;
+
+  return {
+    name: getDispositionValue(disposition, "name"),
+    filename: getDispositionValue(disposition, "filename"),
+    content: Buffer.from(content, "latin1"),
+  };
+}
+
+function getDispositionValue(disposition, key) {
+  const match = disposition.match(new RegExp(`${key}="([^"]*)"`, "i"));
+  return match ? match[1] : null;
+}
+
+function getHeader(headers = {}, name) {
+  const key = Object.keys(headers).find((header) => header.toLowerCase() === name.toLowerCase());
+  return key ? String(headers[key]) : "";
+}
+
+function getBodyBuffer(event) {
+  if (!event.body) return Buffer.from("");
+  return Buffer.from(event.body, event.isBase64Encoded ? "base64" : "utf8");
 }
 
 async function analyzeHoldings(csvText) {
@@ -377,10 +491,11 @@ function parseCsv(csvText) {
   let row = [];
   let field = "";
   let inQuotes = false;
+  const normalizedText = csvText.replace(/^\uFEFF/, "");
 
-  for (let index = 0; index < csvText.length; index += 1) {
-    const char = csvText[index];
-    const nextChar = csvText[index + 1];
+  for (let index = 0; index < normalizedText.length; index += 1) {
+    const char = normalizedText[index];
+    const nextChar = normalizedText[index + 1];
 
     if (char === '"' && inQuotes && nextChar === '"') {
       field += '"';
@@ -419,14 +534,39 @@ function parseCsv(csvText) {
   const nonEmptyRows = rows.filter((items) => items.some((item) => String(item).trim()));
   if (!nonEmptyRows.length) return [];
 
-  const headers = nonEmptyRows[0].map((header) => header.trim().replace(/^\uFEFF/, ""));
-  return nonEmptyRows.slice(1).map((items) => {
+  const headerRowIndex = findHeaderRowIndex(nonEmptyRows);
+  if (headerRowIndex === -1) return [];
+
+  const headers = normalizeHeaders(nonEmptyRows[headerRowIndex]);
+  return nonEmptyRows.slice(headerRowIndex + 1).map((items) => {
     const record = {};
     headers.forEach((header, index) => {
       record[header] = items[index] ?? "";
     });
     return record;
   });
+}
+
+function findHeaderRowIndex(rows) {
+  return rows.findIndex((items) => {
+    const normalizedHeaders = new Set(items.map(normalizeHeader));
+    return REQUIRED_COLUMNS.every((column) => normalizedHeaders.has(normalizeHeader(column)));
+  });
+}
+
+function normalizeHeaders(headers) {
+  const requiredByNormalizedName = new Map(
+    REQUIRED_COLUMNS.map((column) => [normalizeHeader(column), column])
+  );
+
+  return headers.map((header) => {
+    const cleaned = String(header).trim().replace(/^\uFEFF/, "").replace(/\s+/g, " ");
+    return requiredByNormalizedName.get(normalizeHeader(cleaned)) || cleaned;
+  });
+}
+
+function normalizeHeader(header) {
+  return String(header).trim().replace(/^\uFEFF/, "").replace(/\s+/g, " ").toLowerCase();
 }
 
 function toCsv(rows) {
@@ -453,10 +593,7 @@ function escapeCsvField(value) {
 function jsonResponse(statusCode, body) {
   return {
     statusCode,
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: RESPONSE_HEADERS,
     body: JSON.stringify(body),
   };
 }
-
