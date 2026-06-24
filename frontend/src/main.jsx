@@ -34,6 +34,11 @@ function getApiBase() {
   return isLocalhost ? "http://localhost:8000" : "/.netlify/functions";
 }
 
+function getAnalyzeUrl() {
+  const isNetlifyFunction = API_BASE.includes("/.netlify/functions");
+  return `${API_BASE}${isNetlifyFunction ? "/analyze" : "/api/analyze"}`;
+}
+
 function formatCurrency(value) {
   if (value === null || value === undefined) return "N/A";
   return new Intl.NumberFormat("en-US", {
@@ -84,25 +89,9 @@ function App() {
   }
 
   async function submitAnalysis(uploadedFile) {
-    const usingNetlifyFunction = API_BASE.includes("/.netlify/functions");
-
-    if (usingNetlifyFunction) {
-      const csvText = await uploadedFile.text();
-      return fetch(`${API_BASE}/analyze`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          filename: uploadedFile.name,
-          csvText,
-        }),
-      });
-    }
-
     const body = new FormData();
     body.append("file", uploadedFile);
-    return fetch(`${API_BASE}/api/analyze`, {
+    return fetch(getAnalyzeUrl(), {
       method: "POST",
       body,
     });
